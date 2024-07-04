@@ -35,3 +35,10 @@ python run.py
 The results will be saved in the file `data.csv`.
 
 To generate the figures and tables, run the notebook [analysis.ipynb](analysis.ipynb).
+
+There's another file, `example.py`, that solves the problem presented as an example in the
+paper. You can run it with:
+
+```bash
+python example.py
+```
