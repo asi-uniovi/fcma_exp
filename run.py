@@ -1,15 +1,21 @@
 """This module compares FCMA and Conlloovia using synthetic data."""
 
+import datetime
 import itertools
+import json
+import os
 from pathlib import Path
 import random
 import sys
 import traceback
+from typing import Optional
 
+import numpy
 from rich import print  # pylint: disable=redefined-builtin
 from rich.progress import track
 
 import fcma
+from fcma.serialization import ProblemSerializer
 
 from cloudmodel.unified.units import (
     ComputationalUnits,
@@ -146,6 +152,7 @@ def compare_scenario(
     perf: float,
     frac_gap: float,
     add_extra_ccs: bool,
+    date_str: Optional[str] = None,
 ) -> ComparisonResult:
     """Compare FCMA and Conlloovia for a given scenario.
 
@@ -165,6 +172,17 @@ def compare_scenario(
     """
     fcma_problem = create_fcma_problem(napps, families, base_cores, mem_mul, perf)
     # ProblemPrinter(fcma_problem).print()
+
+    # Save the problem to a pickle file for debugging
+    if date_str is None:
+        date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dir_name = f"out/{date_str}"
+    json_name = f"fcma_prob_{exp_num}_{napps}_{len(families)}_{base_cores}_{mem_mul}_{perf}_{frac_gap}_{add_extra_ccs}.json"
+    os.makedirs(dir_name, exist_ok=True)
+    with open(f"{dir_name}/{json_name}", "w") as file:
+        problem_serializer = ProblemSerializer(fcma_problem)
+        problem_json = problem_serializer.as_dict()
+        json.dump(problem_json, file, indent=4)
 
     conlloovia_problem = Fcma2Conlloovia(fcma_problem).convert(
         add_extra_ccs=add_extra_ccs
@@ -205,6 +223,10 @@ def main() -> None:
     """Main function. Defines the combination of parameters to use in the comparison and
     compares FCMA and Conlloovia for each combination."""
     random.seed(100)  # For reproducibility
+    numpy.random.seed(100)  # For reproducibility
+
+    # For saving the intermediary files
+    date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Create an output directory for intermediary files
     Path("out").mkdir(parents=True, exist_ok=True)
@@ -247,6 +269,7 @@ def main() -> None:
                 perf,
                 frac_gap,
                 add_extra_ccs,
+                date_str,
             )
             comp_results_list.append(res)
 

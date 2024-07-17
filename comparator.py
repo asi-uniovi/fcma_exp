@@ -842,11 +842,6 @@ class ComparatorFcmaConlloovia:
         # this value. This is done to check the recycling metric
         wl_multiplier = 1.2
 
-        fcma_wl_w2 = {
-            key: value * wl_multiplier
-            for key, value in self.fcma_problem.workloads.items()
-        }
-
         self.log.info(
             f"Comparing with pars: {list(zip(self.par_names, self.par_values))}"
         )
@@ -857,7 +852,7 @@ class ComparatorFcmaConlloovia:
                 self.log.info(f"Solving FCMA {speed} with sfmpl {sfmpl}")
                 if sfmpl != 1:
                     fcma_problem_to_solve = create_problem_with_updated_sfmpl(
-                        self.fcma_problem, 1
+                        self.fcma_problem, sfmpl
                     )
                 else:
                     fcma_problem_to_solve = self.fcma_problem
@@ -873,6 +868,10 @@ class ComparatorFcmaConlloovia:
                 self.log.info(
                     f"Solving FCMA {speed} with sfmpl {sfmpl} in the second window"
                 )
+                fcma_wl_w2 = {
+                    key: value * wl_multiplier
+                    for key, value in fcma_problem_to_solve.workloads.items()
+                }
                 fcma_problem_w2 = fcma.Fcma(fcma_problem_to_solve.system, fcma_wl_w2)
                 fcma_sols_w2[speed, sfmpl] = fcma_problem_w2.solve(
                     fcma.SolvingPars(
