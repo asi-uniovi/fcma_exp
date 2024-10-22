@@ -28,7 +28,7 @@ from examples import aws_eu_west_1
 
 from comparator import (
     Fcma2Conlloovia,
-    ComparatorFcmaConlloovia,
+    ComparatorFcmaConllooviaFirstFit,
     ComparisonResult,
     ComparisonResults,
     SolverParams,
@@ -154,7 +154,7 @@ def compare_scenario(
     add_extra_ccs: bool,
     date_str: Optional[str] = None,
 ) -> ComparisonResult:
-    """Compare FCMA and Conlloovia for a given scenario.
+    """Compare FCMA, Conlloovia, FFP and FFC for a given scenario.
 
     Args:
         exp_num: Experiment number.
@@ -209,7 +209,7 @@ def compare_scenario(
         frac_gap,
         add_extra_ccs,
     ]
-    comparator = ComparatorFcmaConlloovia(
+    comparator = ComparatorFcmaConllooviaFirstFit(
         fcma_problem, conlloovia_problem, par_names, par_values, dir_name="out"
     )
     solver_params = SolverParams(

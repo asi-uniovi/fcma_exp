@@ -29,12 +29,13 @@ from conlloovia import (
     System,
     Workload,
 )
+from conlloovia.first_fit import FirstFitAllocator, FirstFitIcOrdering
 
 from cloudmodel.unified.units import CurrencyPerTime, Requests, Time
 
 FORMAT = "%(message)s"
 logging.basicConfig(
-    level="NOTSET", format=FORMAT, datefmt="[%X]", handlers=[RichHandler()]
+    level="INFO", format=FORMAT, datefmt="[%X]", handlers=[RichHandler()]
 )
 
 FcmaSolutionDict = Dict[Tuple[int, float], fcma.Solution]  # [speed, sfmpl] -> Solution
@@ -55,6 +56,10 @@ class ComparisonResult:
         conlloovia_sol_w2: Optional[Solution],
         fcma_sols: FcmaSolutionDict,
         fcma_sols_w2: FcmaSolutionDict,
+        ffc_sol: Solution,
+        ffc_sol_w2: Optional[Solution],
+        ffp_sol: Solution,
+        ffp_sol_w2: Optional[Solution],
         par_names: list[str],
         par_values: list[float],
     ):
@@ -64,40 +69,61 @@ class ComparisonResult:
         self.conlloovia_sol_w2 = conlloovia_sol_w2
         self.fcma_sols = fcma_sols
         self.fcma_sols_w2 = fcma_sols_w2
+        self.ffc_sol = ffc_sol
+        self.ffc_sol_w2 = ffc_sol_w2
+        self.ffp_sol = ffp_sol
+        self.ffp_sol_w2 = ffp_sol_w2
+
+    def sol_cost(self, sol: Solution) -> CurrencyPerTime:
+        """Return the cost per time in usd/hour for a Conlloovia-like solution."""
+        if sol.solving_stats.status not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
+            return np.nan * CurrencyPerTime("usd/hour")
+        sched_time = sol.problem.sched_time_size
+        cost_per_time = sol.cost / sched_time
+        return cost_per_time.to("usd/hour")
 
     def conlloovia_cost(self) -> CurrencyPerTime:
-        """Return the cost per time in usd/hour for the Conlloovia solution."""
-        if self.conlloovia_status() not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
-            return np.nan * CurrencyPerTime("usd/hour")
-        conlloovia_sched_time = self.conlloovia_sol.problem.sched_time_size
-        conlloovia_cost_per_time = self.conlloovia_sol.cost / conlloovia_sched_time
-        return conlloovia_cost_per_time.to("usd/hour")
+        """Return the cost per time for the Conlloovia solution."""
+        return self.sol_cost(self.conlloovia_sol)
 
     def costs(
         self,
     ) -> tuple[CurrencyPerTime, ...]:
-        """Return the costs per time for the Conlloovia and FCMA solutions."""
+        """Return the costs per time for the Conlloovia, FFC, FFP and FCMA solutions."""
         return (
-            self.conlloovia_cost(),
+            self.sol_cost(self.conlloovia_sol),
+            self.sol_cost(self.ffc_sol),
+            self.sol_cost(self.ffp_sol),
             *(self.fcma_cost(speed, sfmpl) for speed in SPEEDS for sfmpl in SFMPLS),
         )
 
-    def costs_str(self) -> tuple[str, ...]:
-        """Return the costs per time for the Conlloovia and FCMA solutions as strings."""
-        costs = self.costs()
-        conlloovia_cost = costs[0]
-        if self.conlloovia_status() not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
-            conlloovia_cost_str = "N/A"
-        else:
-            conlloovia_cost_str = f"{conlloovia_cost.magnitude:10.4f}"
+    def sol_cost_str(self, sol: Solution) -> str:
+        """Return the cost per time for a Conlloovia-like solution as a string."""
+        cost = self.sol_cost(sol)
+        if sol.solving_stats.status not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
+            return "N/A"
+        return f"{cost.magnitude:10.4f}"
 
-        return (conlloovia_cost_str, *[f"{cost.magnitude:10.4f}" for cost in costs[1:]])
+    def costs_str(self) -> tuple[str, ...]:
+        """Return the costs per time for the Conlloovia, FFC, FFP and FCMA solutions as
+        strings."""
+        costs = self.costs()
+        conlloovia_cost_str = self.sol_cost_str(self.conlloovia_sol)
+        ffc_cost_str = self.sol_cost_str(self.ffc_sol)
+        ffp_cost_str = self.sol_cost_str(self.ffp_sol)
+
+        return (
+            conlloovia_cost_str,
+            ffc_cost_str,
+            ffp_cost_str,
+            *[f"{cost.magnitude:10.4f}" for cost in costs[3:]],
+        )
 
     def fcma_cost(self, speed: int, sfmpl: float) -> CurrencyPerTime:
         """Return the cost per time for the FCMA solution at the given speed and sfmpl."""
         return self.fcma_sols[speed, sfmpl].statistics.final_cost
 
-    def diff_cost_fcma_conlloovia_str(self, speed: int, sfmpl) -> str:
+    def diff_cost_fcma_conlloovia_str(self, speed: int, sfmpl: float) -> str:
         """Return the difference between the FCMA and Conlloovia costs as a string. If
         Conlloovia didn't find a solution, return 'N/A'."""
         if self.conlloovia_status() not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
@@ -198,21 +224,21 @@ class ComparisonResult:
 
         return result
 
-    def conlloovia_fault_tolerance_m(
-        self, expected_sfmpl: Optional[float] = None
+    def conlloovia_like_sol_fault_tolerance_m(
+        self, sol: Solution, expected_sfmpl: Optional[float] = None
     ) -> float:
-        """Return the fault tolerance metric of the Conlloovia solution. If an expected
+        """Return the fault tolerance metric of a Conlloovia-like solution .If an expected
         sfmpl is provided, use it to compute the metric. Otherwise, use the expected sfmpl
         from the FCMA solution."""
-        # If conlloovia didn't find a solution, return nan
-        if self.conlloovia_status() not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
+        # If a solution wasn't found, return nan
+        if sol.solving_stats.status not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
             return np.nan
 
         if expected_sfmpl is None:
             expected_sfmpl_per_app = self.expected_sfmpl_per_app_from_fcma()
         app_perf_data = {}
         rps_cache = {}  # ic, cc -> rps (float)
-        alloc = self.conlloovia_sol.alloc
+        alloc = sol.alloc
 
         # Obtain the sfmpl_expected, the total performance and the total performance in
         # each VM for each app
@@ -221,19 +247,24 @@ class ComparisonResult:
             app = container.cc.app
             vm = container.vm
             ic = vm.ic
+            if replicas is None or replicas == 0:
+                if num_warnings < 2:
+                    print(
+                        f"Warning: Replicas is None for {container.cc.name} in {vm.name()}"
+                    )
+                elif num_warnings == 2:
+                    print("Further warnings for this solution will be suppressed")
+
+                num_warnings += 1
+                total_cc_perf_rps = 0
+                continue
+
             if (ic, container.cc) in rps_cache:
                 cc_perf_rps = rps_cache[(ic, container.cc)]
             else:
-                cc_perf = self.conlloovia_sol.problem.system.perfs[ic, container.cc]
+                cc_perf = sol.problem.system.perfs[ic, container.cc]
                 cc_perf_rps = cc_perf.to("rps").magnitude
                 rps_cache[(ic, container.cc)] = cc_perf_rps
-            if replicas is None:
-                if num_warnings < 2:
-                    print(f"Warning: Replicas is None for {container.cc.name}")
-                    num_warnings += 1
-                elif num_warnings == 2:
-                    print("Further warnings will be suppressed")
-                replicas = 0
             total_cc_perf_rps = cc_perf_rps * replicas
 
             if app not in app_perf_data:
@@ -271,14 +302,14 @@ class ComparisonResult:
         # Return the proportion of apps that passed the sfmpl_m
         return n_sfmpl_apps_passed / len(app_perf_data)
 
-    def conlloovia_container_isolation_m(self) -> float:
-        """Return the container isolation metric of the Conlloovia solution. The metric is
-        the average of 1/nc where nc is the number of containers in a VM."""
-        # If conlloovia didn't find a solution, return nan
-        if self.conlloovia_status() not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
+    def conlloovia_like_sol_container_isolation_m(self, sol: Solution) -> float:
+        """Return the container isolation metric of a Conlloovia-like solution. The metric
+        is the average of 1/nc where nc is the number of containers in a VM."""
+        # If a solution wasn't found, return nan
+        if sol.solving_stats.status not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
             return np.nan
 
-        alloc = self.conlloovia_sol.alloc
+        alloc = sol.alloc
         n_containers_per_vm = {}
         for container, replicas in alloc.containers.items():
             vm = container.vm
@@ -317,26 +348,28 @@ class ComparisonResult:
             total_cores += used_cores1[ic] * num_cores_ic
         return common_cores, total_cores
 
-    def conlloovia_vm_recycling_m(self) -> float:
-        """Return the recycling metric of the Conlloovia solutions. The metric is the
+    def conlloovia_like_sol_vm_recycling_m(
+        self, sol: Solution, sol_w2: Solution
+    ) -> float:
+        """Return the recycling metric of a Conlloovia-like solution. The metric is the
         proportion of cores that are reused between two allocations, i.e., the number of
         cores that are in instances that are allocated in the two allocations divided by
         the total number of cores. It takes into account that the number of cores can
         increase or decrease."""
-        # If conlloovia didn't find a solution, return nan
-        if self.conlloovia_status() not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
+        # If a solution wasn't found, return nan
+        if sol.solving_stats.status not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
             return np.nan
 
         # Same for the second window
-        assert self.conlloovia_sol_w2 is not None
-        if self.conlloovia_sol_w2.solving_stats.status not in (
+        assert sol_w2 is not None
+        if sol_w2.solving_stats.status not in (
             Status.OPTIMAL,
             Status.INTEGER_FEASIBLE,
         ):
             return np.nan
 
-        nodes1 = ComparisonResult.compute_used_nodes(self.conlloovia_sol.alloc)
-        nodes2 = ComparisonResult.compute_used_nodes(self.conlloovia_sol_w2.alloc)
+        nodes1 = ComparisonResult.compute_used_nodes(sol.alloc)
+        nodes2 = ComparisonResult.compute_used_nodes(sol_w2.alloc)
 
         common_cores12, total_cores1 = ComparisonResult.compute_common_and_total_cores(
             nodes1, nodes2
@@ -347,14 +380,15 @@ class ComparisonResult:
 
         return max(common_cores12 / total_cores1, common_cores21 / total_cores2)
 
-    def conlloovia_vm_load_balance_m(self) -> float:
-        """Return the VM load balancing metric, which is the average of 1/n_a, where n_a
-        is the number of allocated VMs for each application."""
-        # If conlloovia didn't find a solution, return nan
-        if self.conlloovia_status() not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
+    def csol_vm_load_balance_m(self, sol: Solution) -> float:
+        """Return the VM load balancing metric of a Conlloovia-like solution, which is the
+        average of 1/n_a, where n_a is the number of allocated VMs for each
+        application."""
+        # If a solution wasn't found, return nan
+        if sol.solving_stats.status not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
             return np.nan
 
-        alloc = self.conlloovia_sol.alloc
+        alloc = sol.alloc
         vms_per_app = defaultdict(set)  # app -> set of vms
         for container in alloc.containers:
             app = container.cc.app
@@ -364,6 +398,31 @@ class ComparisonResult:
 
         load_balance_metric_per_app = [1 / len(vms) for vms in vms_per_app.values()]
         return sum(load_balance_metric_per_app) / len(load_balance_metric_per_app)
+
+    def clear_allocations(self) -> None:
+        """Remove all allocations in the solution files to free memory.
+
+        The __setattr__ method is used to bypass the immutability of the attributes.
+        """
+        if self.conlloovia_sol:
+            object.__setattr__(self.conlloovia_sol, "alloc", None)
+        if self.conlloovia_sol_w2:
+            object.__setattr__(self.conlloovia_sol_w2, "alloc", None)
+
+        for sol in self.fcma_sols.values():
+            object.__setattr__(sol, "allocation", None)
+        for sol in self.fcma_sols_w2.values():
+            object.__setattr__(sol, "allocation", None)
+
+        if self.ffc_sol:
+            object.__setattr__(self.ffc_sol, "alloc", None)
+        if self.ffc_sol_w2:
+            object.__setattr__(self.ffc_sol_w2, "alloc", None)
+
+        if self.ffp_sol:
+            object.__setattr__(self.ffp_sol, "alloc", None)
+        if self.ffp_sol_w2:
+            object.__setattr__(self.ffp_sol_w2, "alloc", None)
 
 
 class ComparisonResults:
@@ -404,6 +463,9 @@ class ComparisonResults:
 
         # Costs
         table.add_column("Con. $/h", justify="right")
+        table.add_column("FFC cost $/h", justify="right")
+        table.add_column("FFP cost $/h", justify="right")
+
         if verbose:
             for speed in SPEEDS:
                 for sfmpl in SFMPLS:
@@ -542,9 +604,11 @@ class ComparisonResults:
                     f"{comp_res.all_lower_bound_d_h(first_sfpml):10.4f}",
                 )
                 costs_str = (
-                    comp_res.costs_str()[0],
-                    comp_res.costs_str()[1],
-                )  # Conlloovia and FCMA speed 1 fcma 1
+                    comp_res.costs_str()[0],  # Conlloovia
+                    comp_res.costs_str()[1],  # FFC
+                    comp_res.costs_str()[2],  # FFP
+                    comp_res.costs_str()[3],  # FCMA speed 1 sfmpl 0.5
+                )
                 diff_cost_fcma_conlloovia = (
                     comp_res.diff_cost_fcma_conlloovia_str(1, first_sfpml),
                 )
@@ -581,13 +645,23 @@ class ComparisonResults:
             )
 
             conlloovia_fault_tolerance_m = (
-                str(comp_res.conlloovia_fault_tolerance_m(expected_sfmpl))
+                str(
+                    comp_res.conlloovia_like_sol_fault_tolerance_m(
+                        comp_res.conlloovia_sol, expected_sfmpl
+                    )
+                )
                 for expected_sfmpl in SFMPLS
             )
-            conlloovia_vm_recycling_m = f"{comp_res.conlloovia_vm_recycling_m():.4f}"
-            conlloovia_vm_load_balance_m = (
-                f"{comp_res.conlloovia_vm_load_balance_m():.4f}"
+            conlloovia_vm_recycling_m_number = (
+                comp_res.conlloovia_like_sol_vm_recycling_m(
+                    comp_res.conlloovia_sol, comp_res.conlloovia_sol_w2
+                )
             )
+            conlloovia_vm_recycling_m = f"{conlloovia_vm_recycling_m_number:.4f}"
+            conlloovia_vm_load_balance_m_number = comp_res.csol_vm_load_balance_m(
+                comp_res.conlloovia_sol
+            )
+            conlloovia_vm_load_balance_m = f"{conlloovia_vm_load_balance_m_number:.4f}"
 
             values = (str(value) for value in comp_res.par_values)
             table.add_row(
@@ -605,7 +679,7 @@ class ComparisonResults:
                 *fcma_times,
                 *conlloovia_fault_tolerance_m,
                 *fcma_fault_tolerance_m,
-                f"{comp_res.conlloovia_container_isolation_m():.4f}",
+                f"{comp_res.conlloovia_like_sol_container_isolation_m(comp_res.conlloovia_sol):.4f}",
                 *fcma_isolation_m,
                 conlloovia_vm_recycling_m,
                 *fcma_recycling_m,
@@ -643,6 +717,8 @@ class ComparisonResults:
                 "Conlloovia_cost_d_h": [
                     comp.costs()[0].magnitude for comp in self.results
                 ],
+                "FFC_cost_d_h": [comp.costs()[1].magnitude for comp in self.results],
+                "FFP_cost_d_h": [comp.costs()[2].magnitude for comp in self.results],
                 **{
                     f"Fcma_{speed}_{sfmpl}_cost_d_h": [
                         comp.fcma_cost(speed, sfmpl).magnitude for comp in self.results
@@ -656,6 +732,22 @@ class ComparisonResults:
                 ],
                 "Conlloovia_solving_time_s": [
                     f"{comp.conlloovia_sol.solving_stats.solving_time:.4f}"
+                    for comp in self.results
+                ],
+                "FFC_creation_time_s": [
+                    f"{comp.ffc_sol.solving_stats.creation_time:.4f}"
+                    for comp in self.results
+                ],
+                "FFC_solving_time_s": [
+                    f"{comp.ffc_sol.solving_stats.solving_time:.4f}"
+                    for comp in self.results
+                ],
+                "FFP_creation_time_s": [
+                    f"{comp.ffp_sol.solving_stats.creation_time:.4f}"
+                    for comp in self.results
+                ],
+                "FFP_solving_time_s": [
+                    f"{comp.ffp_sol.solving_stats.solving_time:.4f}"
                     for comp in self.results
                 ],
                 **{
@@ -676,7 +768,27 @@ class ComparisonResults:
                 },
                 **{
                     f"Conlloovia_fault_tolerance_m_e_{expected_sfmpl}": [
-                        comp.conlloovia_fault_tolerance_m(expected_sfmpl)
+                        comp.conlloovia_like_sol_fault_tolerance_m(
+                            comp.conlloovia_sol, expected_sfmpl
+                        )
+                        for comp in self.results
+                    ]
+                    for expected_sfmpl in SFMPLS
+                },
+                **{
+                    f"FFC_fault_tolerance_m_e_{expected_sfmpl}": [
+                        comp.conlloovia_like_sol_fault_tolerance_m(
+                            comp.ffc_sol, expected_sfmpl
+                        )
+                        for comp in self.results
+                    ]
+                    for expected_sfmpl in SFMPLS
+                },
+                **{
+                    f"FFP_fault_tolerance_m_e_{expected_sfmpl}": [
+                        comp.conlloovia_like_sol_fault_tolerance_m(
+                            comp.ffp_sol, expected_sfmpl
+                        )
                         for comp in self.results
                     ]
                     for expected_sfmpl in SFMPLS
@@ -690,29 +802,44 @@ class ComparisonResults:
                     for sfmpl in SFMPLS
                 },
                 "Conlloovia_isolation_m": [
-                    comp.conlloovia_container_isolation_m() for comp in self.results
+                    comp.conlloovia_like_sol_container_isolation_m(comp.conlloovia_sol)
+                    for comp in self.results
                 ],
-                **{
-                    f"Fcma_{speed}_{sfmpl}_isolation_m": [
-                        comp.fcma_sols[speed, sfmpl].statistics.container_isolation_m
-                        for comp in self.results
-                    ]
-                    for speed in SPEEDS
-                    for sfmpl in SFMPLS
-                },
+                "FFC_isolation_m": [
+                    comp.conlloovia_like_sol_container_isolation_m(comp.ffc_sol)
+                    for comp in self.results
+                ],
+                "FFP_isolation_m": [
+                    comp.conlloovia_like_sol_container_isolation_m(comp.ffp_sol)
+                    for comp in self.results
+                ],
                 "Conlloovia_vm_recycling_m": [
-                    comp.conlloovia_vm_recycling_m() for comp in self.results
+                    comp.conlloovia_like_sol_vm_recycling_m(
+                        comp.conlloovia_sol, comp.conlloovia_sol_w2
+                    )
+                    for comp in self.results
                 ],
-                **{
-                    f"Fcma_{speed}_{sfmpl}_vm_recycling_m": [
-                        comp.fcma_sols[speed, sfmpl].statistics.vm_recycling_m
-                        for comp in self.results
-                    ]
-                    for speed in SPEEDS
-                    for sfmpl in SFMPLS
-                },
+                "FFC_vm_recycling_m": [
+                    comp.conlloovia_like_sol_vm_recycling_m(
+                        comp.ffc_sol, comp.ffc_sol_w2
+                    )
+                    for comp in self.results
+                ],
+                "FFP_vm_recycling_m": [
+                    comp.conlloovia_like_sol_vm_recycling_m(
+                        comp.ffp_sol, comp.ffp_sol_w2
+                    )
+                    for comp in self.results
+                ],
                 "Conlloovia_vm_load_balance_m": [
-                    comp.conlloovia_vm_load_balance_m() for comp in self.results
+                    comp.csol_vm_load_balance_m(comp.conlloovia_sol)
+                    for comp in self.results
+                ],
+                "FFC_vm_load_balance_m": [
+                    comp.csol_vm_load_balance_m(comp.ffc_sol) for comp in self.results
+                ],
+                "FFP_vm_load_balance_m": [
+                    comp.csol_vm_load_balance_m(comp.ffp_sol) for comp in self.results
                 ],
                 **{
                     f"Fcma_{speed}_{sfmpl}_vm_load_balance_m": [
@@ -794,8 +921,9 @@ def create_problem_with_updated_sfmpl(
     return fcma.Fcma(system=new_system, workloads=new_workloads)
 
 
-class ComparatorFcmaConlloovia:
-    """Compares a FCMA problem with a Conlloovia problem."""
+class ComparatorFcmaConllooviaFirstFit:
+    """Compares a problem between FCMA, Conlloovia and the first fit heuristics FFP and
+    FFC."""
 
     def __init__(
         self,
@@ -829,6 +957,9 @@ class ComparatorFcmaConlloovia:
         self, solver_params: SolverParams, verbose: bool = False
     ) -> ComparisonResult:
         """Compare the FCMA and Conlloovia solutions."""
+        self.log.info(
+            f"Comparing with pars: {list(zip(self.par_names, self.par_values))}"
+        )
 
         solver = PULP_CBC_CMD(
             gapRel=solver_params.frac_gap,
@@ -842,9 +973,36 @@ class ComparatorFcmaConlloovia:
         # this value. This is done to check the recycling metric
         wl_multiplier = 1.2
 
-        self.log.info(
-            f"Comparing with pars: {list(zip(self.par_names, self.par_values))}"
+        fcma_sols, fcma_sols_w2 = self.solve_fcma_2_windows(solver, wl_multiplier)
+
+        conlloovia_sol, conlloovia_sol_w2 = self.solve_conlloovia_2_windows(
+            solver_params, verbose, solver, wl_multiplier
         )
+
+        ffc_sol, ffc_sol_w2 = self.solve_first_fist_2_windows(
+            FirstFitIcOrdering.CORE_DESCENDING, wl_multiplier
+        )
+        ffp_sol, ffp_sol_w2 = self.solve_first_fist_2_windows(
+            FirstFitIcOrdering.PRICE_ASCENDING, wl_multiplier
+        )
+
+        return ComparisonResult(
+            conlloovia_sol,
+            conlloovia_sol_w2,
+            fcma_sols,
+            fcma_sols_w2,
+            ffc_sol,
+            ffc_sol_w2,
+            ffp_sol,
+            ffp_sol_w2,
+            self.par_names,
+            self.par_values,
+        )
+
+    def solve_fcma_2_windows(
+        self, solver: Any, wl_multiplier: float
+    ) -> tuple[FcmaSolutionDict, FcmaSolutionDict]:
+        """Solve the FCMA problem for the first and second windows."""
         fcma_sols: FcmaSolutionDict = {}  # [speed, sfmpl] -> Solution
         fcma_sols_w2: FcmaSolutionDict = {}  # [speed, sfmpl] -> Solution
         for speed in SPEEDS:
@@ -885,6 +1043,16 @@ class ComparatorFcmaConlloovia:
                     fcma_sols_w2[speed, sfmpl].allocation,
                 )
 
+        return fcma_sols, fcma_sols_w2
+
+    def solve_conlloovia_2_windows(
+        self,
+        solver_params: SolverParams,
+        verbose: bool,
+        solver: Any,
+        wl_multiplier: float,
+    ) -> tuple[Solution, Solution]:
+        """Solve the Conlloovia problem for the first and second windows."""
         self.log.info("Solving Conlloovia")
         conlloovia_solution = self.solve_conlloovia(self.conlloovia_problem, solver)
         self.dump_sol(conlloovia_solution, "conlloovia_", "")
@@ -934,15 +1102,44 @@ class ComparatorFcmaConlloovia:
             conlloovia_solution_w2 = self.solve_conlloovia(
                 conlloovia_problem_w2, solver
             )
+        else:
+            self.log.info(
+                "There is no feasible solution for the first window, so we don't solve "
+                "the second window"
+            )
 
-        return ComparisonResult(
-            conlloovia_solution,
-            conlloovia_solution_w2,
-            fcma_sols,
-            fcma_sols_w2,
-            self.par_names,
-            self.par_values,
-        )
+        return conlloovia_solution, conlloovia_solution_w2
+
+    def solve_first_fist_2_windows(
+        self, ordering: FirstFitIcOrdering, wl_multiplier: float
+    ) -> tuple[Solution, Solution]:
+        self.log.info(f"Solving First Fit: {ordering}")
+        ff_solution = self.solve_first_fit(self.conlloovia_problem, ordering)
+        prefix = "ffc_" if ordering == FirstFitIcOrdering.CORE_DESCENDING else "ffp_"
+        self.dump_sol(ff_solution, prefix, "")
+
+        # Solve for the second window if there is an optimal or feasible solution for the
+        # first window
+        if ff_solution.solving_stats.status in (
+            Status.OPTIMAL,
+            Status.INTEGER_FEASIBLE,
+        ):
+            self.log.info(f"Solving First Fit in the second window: {ordering}")
+            ff_problem_w2 = Problem(
+                system=self.conlloovia_problem.system,
+                workloads={
+                    app: Workload(
+                        num_reqs=wl.num_reqs * wl_multiplier,
+                        time_slot_size=wl.time_slot_size,
+                        app=app,
+                    )
+                    for app, wl in self.conlloovia_problem.workloads.items()
+                },
+                sched_time_size=self.conlloovia_problem.sched_time_size,
+            )
+            ff_solution_w2 = self.solve_first_fit(ff_problem_w2, ordering)
+
+        return ff_solution, ff_solution_w2
 
     def solve_conlloovia(self, problem: Problem, solver: Any) -> Solution:
         """Solve the Conlloovia problem."""
@@ -951,6 +1148,16 @@ class ComparatorFcmaConlloovia:
         self.log.info("Allocating with Conlloovia")
         conlloovia_alloc = ConllooviaAllocator(adapted_problem)
         return conlloovia_alloc.solve(solver)
+
+    def solve_first_fit(
+        self, problem: Problem, ordering: FirstFitIcOrdering
+    ) -> Solution:
+        """Solve the Conlloovia problem with the first fit heuristics."""
+        self.log.info("Adapting the problem")
+        adapted_problem = LimitsAdapter(problem=problem).compute_adapted_problem()
+        self.log.info(f"Allocating with First Fit {ordering}")
+        first_fit_alloc = FirstFitAllocator(adapted_problem, ordering)
+        return first_fit_alloc.solve()
 
 
 class Fcma2Conlloovia:
