@@ -271,6 +271,7 @@ def main() -> None:
                 add_extra_ccs,
                 date_str,
             )
+            res.compute_metrics_and_clear_allocs()  # To save memory
             comp_results_list.append(res)
 
             # Print a table with the comparison and save to CSV the current partial

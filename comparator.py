@@ -74,6 +74,13 @@ class ComparisonResult:
         self.ffp_sol = ffp_sol
         self.ffp_sol_w2 = ffp_sol_w2
 
+        # Fields to store the metrics before removing the allocations. There will
+        # be an entry for Conlloovia, FFC and FFP for each SMPFL
+        self.fault_tolerance_m = {}
+        self.container_isolation_m = {}
+        self.vm_recycling_m = {}
+        self.vm_load_balance_m = {}
+
     def sol_cost(self, sol: Solution) -> CurrencyPerTime:
         """Return the cost per time in usd/hour for a Conlloovia-like solution."""
         if sol.solving_stats.status not in (Status.OPTIMAL, Status.INTEGER_FEASIBLE):
@@ -399,7 +406,7 @@ class ComparisonResult:
         load_balance_metric_per_app = [1 / len(vms) for vms in vms_per_app.values()]
         return sum(load_balance_metric_per_app) / len(load_balance_metric_per_app)
 
-    def clear_allocations(self) -> None:
+    def __clear_allocations(self) -> None:
         """Remove all allocations in the solution files to free memory.
 
         The __setattr__ method is used to bypass the immutability of the attributes.
@@ -423,6 +430,34 @@ class ComparisonResult:
             object.__setattr__(self.ffp_sol, "alloc", None)
         if self.ffp_sol_w2:
             object.__setattr__(self.ffp_sol_w2, "alloc", None)
+
+    def __compute_metrics(self) -> None:
+        """Compute the metrics for the Conlloovia, FFC and FFP solutions."""
+        solutions = {
+            "Conlloovia": (self.conlloovia_sol, self.conlloovia_sol_w2),
+            "FFC": (self.ffc_sol, self.ffc_sol_w2),
+            "FFP": (self.ffp_sol, self.ffp_sol_w2),
+        }
+
+        for name, (sol, sol_w2) in solutions.items():
+            self.fault_tolerance_m[name] = {
+                expected_sfmpl: self.conlloovia_like_sol_fault_tolerance_m(
+                    sol, expected_sfmpl
+                )
+                for expected_sfmpl in SFMPLS
+            }
+            self.container_isolation_m[name] = (
+                self.conlloovia_like_sol_container_isolation_m(sol)
+            )
+            self.vm_recycling_m[name] = self.conlloovia_like_sol_vm_recycling_m(
+                sol, sol_w2
+            )
+            self.vm_load_balance_m[name] = self.csol_vm_load_balance_m(sol)
+
+    def compute_metrics_and_clear_allocs(self) -> None:
+        """Compute the metrics and remove the allocations to free memory."""
+        self.__compute_metrics()
+        self.__clear_allocations()
 
 
 class ComparisonResults:
@@ -645,22 +680,14 @@ class ComparisonResults:
             )
 
             conlloovia_fault_tolerance_m = (
-                str(
-                    comp_res.conlloovia_like_sol_fault_tolerance_m(
-                        comp_res.conlloovia_sol, expected_sfmpl
-                    )
-                )
+                str(comp_res.fault_tolerance_m["Conlloovia"][expected_sfmpl])
                 for expected_sfmpl in SFMPLS
             )
-            conlloovia_vm_recycling_m_number = (
-                comp_res.conlloovia_like_sol_vm_recycling_m(
-                    comp_res.conlloovia_sol, comp_res.conlloovia_sol_w2
-                )
-            )
+            conlloovia_vm_recycling_m_number = comp_res.vm_recycling_m["Conlloovia"]
             conlloovia_vm_recycling_m = f"{conlloovia_vm_recycling_m_number:.4f}"
-            conlloovia_vm_load_balance_m_number = comp_res.csol_vm_load_balance_m(
-                comp_res.conlloovia_sol
-            )
+            conlloovia_vm_load_balance_m_number = comp_res.vm_load_balance_m[
+                "Conlloovia"
+            ]
             conlloovia_vm_load_balance_m = f"{conlloovia_vm_load_balance_m_number:.4f}"
 
             values = (str(value) for value in comp_res.par_values)
@@ -679,7 +706,7 @@ class ComparisonResults:
                 *fcma_times,
                 *conlloovia_fault_tolerance_m,
                 *fcma_fault_tolerance_m,
-                f"{comp_res.conlloovia_like_sol_container_isolation_m(comp_res.conlloovia_sol):.4f}",
+                f"{comp_res.container_isolation_m["Conlloovia"]:.4f}",
                 *fcma_isolation_m,
                 conlloovia_vm_recycling_m,
                 *fcma_recycling_m,
@@ -695,162 +722,154 @@ class ComparisonResults:
             return pd.DataFrame()
 
         par_names = self.results[0].par_names
-        return pd.DataFrame(
-            {
-                **{
-                    par_name: [comp.par_values[i] for comp in self.results]
-                    for i, par_name in enumerate(par_names)
-                },
-                "Conlloovia_vars": [comp.conlloovia_vars() for comp in self.results],
-                "Conlloovia_status": [
-                    comp.conlloovia_status().name for comp in self.results
-                ],
-                "Conlloovia_lower_bound_d_h": [
-                    comp.c_lower_bound_d_h() for comp in self.results
-                ],
-                **{
-                    f"All_lower_bound_d_h_{sfmpl}": [
-                        comp.all_lower_bound_d_h(sfmpl) for comp in self.results
-                    ]
-                    for sfmpl in SFMPLS
-                },
-                "Conlloovia_cost_d_h": [
-                    comp.costs()[0].magnitude for comp in self.results
-                ],
-                "FFC_cost_d_h": [comp.costs()[1].magnitude for comp in self.results],
-                "FFP_cost_d_h": [comp.costs()[2].magnitude for comp in self.results],
-                **{
-                    f"Fcma_{speed}_{sfmpl}_cost_d_h": [
-                        comp.fcma_cost(speed, sfmpl).magnitude for comp in self.results
-                    ]
-                    for speed in SPEEDS
-                    for sfmpl in SFMPLS
-                },
-                "Conlloovia_creation_time_s": [
-                    f"{comp.conlloovia_sol.solving_stats.creation_time:.4f}"
+        return pd.DataFrame(self.as_dict(par_names))
+
+    def as_dict(self, par_names):
+        return {
+            **{
+                par_name: [comp.par_values[i] for comp in self.results]
+                for i, par_name in enumerate(par_names)
+            },
+            "Conlloovia_vars": [comp.conlloovia_vars() for comp in self.results],
+            "Conlloovia_status": [
+                comp.conlloovia_status().name for comp in self.results
+            ],
+            "Conlloovia_lower_bound_d_h": [
+                comp.c_lower_bound_d_h() for comp in self.results
+            ],
+            **{
+                f"All_lower_bound_d_h_{sfmpl}": [
+                    comp.all_lower_bound_d_h(sfmpl) for comp in self.results
+                ]
+                for sfmpl in SFMPLS
+            },
+            "Conlloovia_cost_d_h": [comp.costs()[0].magnitude for comp in self.results],
+            "FFC_cost_d_h": [comp.costs()[1].magnitude for comp in self.results],
+            "FFP_cost_d_h": [comp.costs()[2].magnitude for comp in self.results],
+            **{
+                f"Fcma_{speed}_{sfmpl}_cost_d_h": [
+                    comp.fcma_cost(speed, sfmpl).magnitude for comp in self.results
+                ]
+                for speed in SPEEDS
+                for sfmpl in SFMPLS
+            },
+            "Conlloovia_creation_time_s": [
+                f"{comp.conlloovia_sol.solving_stats.creation_time:.4f}"
+                for comp in self.results
+            ],
+            "Conlloovia_solving_time_s": [
+                f"{comp.conlloovia_sol.solving_stats.solving_time:.4f}"
+                for comp in self.results
+            ],
+            "FFC_creation_time_s": [
+                f"{comp.ffc_sol.solving_stats.creation_time:.4f}"
+                for comp in self.results
+            ],
+            "FFC_solving_time_s": [
+                f"{comp.ffc_sol.solving_stats.solving_time:.4f}"
+                for comp in self.results
+            ],
+            "FFP_creation_time_s": [
+                f"{comp.ffp_sol.solving_stats.creation_time:.4f}"
+                for comp in self.results
+            ],
+            "FFP_solving_time_s": [
+                f"{comp.ffp_sol.solving_stats.solving_time:.4f}"
+                for comp in self.results
+            ],
+            **{
+                f"Fcma_{speed}_{sfmpl}_pre_alloc_time_s": [
+                    f"{comp.fcma_sols[speed, sfmpl].statistics.pre_allocation_seconds:.4f}"
                     for comp in self.results
-                ],
-                "Conlloovia_solving_time_s": [
-                    f"{comp.conlloovia_sol.solving_stats.solving_time:.4f}"
+                ]
+                for speed in SPEEDS
+                for sfmpl in SFMPLS
+            },
+            **{
+                f"Fcma_{speed}_{sfmpl}_alloc_time_s": [
+                    f"{comp.fcma_sols[speed, sfmpl].statistics.allocation_seconds:.4f}"
                     for comp in self.results
-                ],
-                "FFC_creation_time_s": [
-                    f"{comp.ffc_sol.solving_stats.creation_time:.4f}"
+                ]
+                for speed in SPEEDS
+                for sfmpl in SFMPLS
+            },
+            **{
+                f"Conlloovia_fault_tolerance_m_e_{expected_sfmpl}": [
+                    comp.fault_tolerance_m["Conlloovia"][expected_sfmpl]
                     for comp in self.results
-                ],
-                "FFC_solving_time_s": [
-                    f"{comp.ffc_sol.solving_stats.solving_time:.4f}"
+                ]
+                for expected_sfmpl in SFMPLS
+            },
+            **{
+                f"FFC_fault_tolerance_m_e_{expected_sfmpl}": [
+                    comp.fault_tolerance_m["FFC"][expected_sfmpl]
                     for comp in self.results
-                ],
-                "FFP_creation_time_s": [
-                    f"{comp.ffp_sol.solving_stats.creation_time:.4f}"
+                ]
+                for expected_sfmpl in SFMPLS
+            },
+            **{
+                f"FFP_fault_tolerance_m_e_{expected_sfmpl}": [
+                    comp.fault_tolerance_m["FFP"][expected_sfmpl]
                     for comp in self.results
-                ],
-                "FFP_solving_time_s": [
-                    f"{comp.ffp_sol.solving_stats.solving_time:.4f}"
+                ]
+                for expected_sfmpl in SFMPLS
+            },
+            **{
+                f"Fcma_{speed}_{sfmpl}_fault_tolerance_m": [
+                    comp.fcma_sols[speed, sfmpl].statistics.fault_tolerance_m
                     for comp in self.results
-                ],
-                **{
-                    f"Fcma_{speed}_{sfmpl}_pre_alloc_time_s": [
-                        f"{comp.fcma_sols[speed, sfmpl].statistics.pre_allocation_seconds:.4f}"
-                        for comp in self.results
-                    ]
-                    for speed in SPEEDS
-                    for sfmpl in SFMPLS
-                },
-                **{
-                    f"Fcma_{speed}_{sfmpl}_alloc_time_s": [
-                        f"{comp.fcma_sols[speed, sfmpl].statistics.allocation_seconds:.4f}"
-                        for comp in self.results
-                    ]
-                    for speed in SPEEDS
-                    for sfmpl in SFMPLS
-                },
-                **{
-                    f"Conlloovia_fault_tolerance_m_e_{expected_sfmpl}": [
-                        comp.conlloovia_like_sol_fault_tolerance_m(
-                            comp.conlloovia_sol, expected_sfmpl
-                        )
-                        for comp in self.results
-                    ]
-                    for expected_sfmpl in SFMPLS
-                },
-                **{
-                    f"FFC_fault_tolerance_m_e_{expected_sfmpl}": [
-                        comp.conlloovia_like_sol_fault_tolerance_m(
-                            comp.ffc_sol, expected_sfmpl
-                        )
-                        for comp in self.results
-                    ]
-                    for expected_sfmpl in SFMPLS
-                },
-                **{
-                    f"FFP_fault_tolerance_m_e_{expected_sfmpl}": [
-                        comp.conlloovia_like_sol_fault_tolerance_m(
-                            comp.ffp_sol, expected_sfmpl
-                        )
-                        for comp in self.results
-                    ]
-                    for expected_sfmpl in SFMPLS
-                },
-                **{
-                    f"Fcma_{speed}_{sfmpl}_fault_tolerance_m": [
-                        comp.fcma_sols[speed, sfmpl].statistics.fault_tolerance_m
-                        for comp in self.results
-                    ]
-                    for speed in SPEEDS
-                    for sfmpl in SFMPLS
-                },
-                "Conlloovia_isolation_m": [
-                    comp.conlloovia_like_sol_container_isolation_m(comp.conlloovia_sol)
+                ]
+                for speed in SPEEDS
+                for sfmpl in SFMPLS
+            },
+            "Conlloovia_isolation_m": [
+                comp.container_isolation_m["Conlloovia"] for comp in self.results
+            ],
+            "FFC_isolation_m": [
+                comp.container_isolation_m["FFC"] for comp in self.results
+            ],
+            "FFP_isolation_m": [
+                comp.container_isolation_m["FFP"] for comp in self.results
+            ],
+            **{
+                f"Fcma_{speed}_{sfmpl}_isolation_m": [
+                    comp.fcma_sols[speed, sfmpl].statistics.container_isolation_m
                     for comp in self.results
-                ],
-                "FFC_isolation_m": [
-                    comp.conlloovia_like_sol_container_isolation_m(comp.ffc_sol)
+                ]
+                for speed in SPEEDS
+                for sfmpl in SFMPLS
+            },
+            "Conlloovia_vm_recycling_m": [
+                comp.vm_recycling_m["Conlloovia"] for comp in self.results
+            ],
+            "FFC_vm_recycling_m": [comp.vm_recycling_m["FFC"] for comp in self.results],
+            "FFP_vm_recycling_m": [comp.vm_recycling_m["FFP"] for comp in self.results],
+            **{
+                f"Fcma_{speed}_{sfmpl}_recycling_m": [
+                    comp.fcma_sols[speed, sfmpl].statistics.vm_recycling_m
                     for comp in self.results
-                ],
-                "FFP_isolation_m": [
-                    comp.conlloovia_like_sol_container_isolation_m(comp.ffp_sol)
+                ]
+                for speed in SPEEDS
+                for sfmpl in SFMPLS
+            },
+            "Conlloovia_vm_load_balance_m": [
+                comp.vm_load_balance_m["Conlloovia"] for comp in self.results
+            ],
+            "FFC_vm_load_balance_m": [
+                comp.vm_load_balance_m["FFC"] for comp in self.results
+            ],
+            "FFP_vm_load_balance_m": [
+                comp.vm_load_balance_m["FFP"] for comp in self.results
+            ],
+            **{
+                f"Fcma_{speed}_{sfmpl}_vm_load_balance_m": [
+                    comp.fcma_sols[speed, sfmpl].statistics.vm_load_balance_m
                     for comp in self.results
-                ],
-                "Conlloovia_vm_recycling_m": [
-                    comp.conlloovia_like_sol_vm_recycling_m(
-                        comp.conlloovia_sol, comp.conlloovia_sol_w2
-                    )
-                    for comp in self.results
-                ],
-                "FFC_vm_recycling_m": [
-                    comp.conlloovia_like_sol_vm_recycling_m(
-                        comp.ffc_sol, comp.ffc_sol_w2
-                    )
-                    for comp in self.results
-                ],
-                "FFP_vm_recycling_m": [
-                    comp.conlloovia_like_sol_vm_recycling_m(
-                        comp.ffp_sol, comp.ffp_sol_w2
-                    )
-                    for comp in self.results
-                ],
-                "Conlloovia_vm_load_balance_m": [
-                    comp.csol_vm_load_balance_m(comp.conlloovia_sol)
-                    for comp in self.results
-                ],
-                "FFC_vm_load_balance_m": [
-                    comp.csol_vm_load_balance_m(comp.ffc_sol) for comp in self.results
-                ],
-                "FFP_vm_load_balance_m": [
-                    comp.csol_vm_load_balance_m(comp.ffp_sol) for comp in self.results
-                ],
-                **{
-                    f"Fcma_{speed}_{sfmpl}_vm_load_balance_m": [
-                        comp.fcma_sols[speed, sfmpl].statistics.vm_load_balance_m
-                        for comp in self.results
-                    ]
-                    for speed in SPEEDS
-                    for sfmpl in SFMPLS
-                },
-            }
-        )
+                ]
+                for speed in SPEEDS
+                for sfmpl in SFMPLS
+            },
+        }
 
     def save_to_csv(
         self, filename: None | str = None, out_dir: None | str = None
