@@ -845,7 +845,7 @@ class ComparisonResults:
             "FFC_vm_recycling_m": [comp.vm_recycling_m["FFC"] for comp in self.results],
             "FFP_vm_recycling_m": [comp.vm_recycling_m["FFP"] for comp in self.results],
             **{
-                f"Fcma_{speed}_{sfmpl}_recycling_m": [
+                f"Fcma_{speed}_{sfmpl}_vm_recycling_m": [
                     comp.fcma_sols[speed, sfmpl].statistics.vm_recycling_m
                     for comp in self.results
                 ]
