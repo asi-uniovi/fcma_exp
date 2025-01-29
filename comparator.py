@@ -204,7 +204,7 @@ class ComparisonResult:
         percentage string."""
         fcma_cost = self.fcma_cost(speed, sfmpl)
         lower_bound = self.c_lower_bound_d_h()
-        if lower_bound != np.nan and lower_bound is not None:
+        if lower_bound != np.nan and lower_bound is not None and lower_bound != 0:
             return f"{(fcma_cost.magnitude - lower_bound) / lower_bound * 100:10.4f}"
         return "N/A"
 
