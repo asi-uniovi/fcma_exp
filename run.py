@@ -23,8 +23,7 @@ from cloudmodel.unified.units import (
     Storage,
 )
 
-sys.path.insert(0, "/home/joaquin/k8s/fcma")  # pylint: disable=wrong-import-position
-from examples import aws_eu_west_1
+import aws_eu_west_1
 
 from comparator import (
     Fcma2Conlloovia,
