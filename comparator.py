@@ -706,7 +706,7 @@ class ComparisonResults:
                 *fcma_times,
                 *conlloovia_fault_tolerance_m,
                 *fcma_fault_tolerance_m,
-                f"{comp_res.container_isolation_m["Conlloovia"]:.4f}",
+                f"{comp_res.container_isolation_m['Conlloovia']:.4f}",
                 *fcma_isolation_m,
                 conlloovia_vm_recycling_m,
                 *fcma_recycling_m,
