@@ -8,7 +8,7 @@ cycler==0.12.1
 debugpy==1.8.2
 decorator==5.1.1
 executing==2.0.1
-git+https://github.com/asi-uniovi/fcma.git@4aab3b8ed05006769977d202d83545afbdb2134f#egg=fcma
+git+https://github.com/asi-uniovi/fcma.git@a88868684a3449ee707996aee93b4e5ad727aad3#egg=fcma
 fonttools==4.53.0
 ipykernel==6.29.5
 ipython==8.26.0

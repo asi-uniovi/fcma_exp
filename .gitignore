@@ -164,3 +164,4 @@ cython_debug/
 
 # Output directory
 out/
+out_scalability/

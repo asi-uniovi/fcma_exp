@@ -26,15 +26,24 @@ pip install -r requirements.txt
 
 ## Usage
 
-To run the experiments, execute the following command:
+There are two set of experiments:
+1. **Comparison with other algorithms**: This set of experiments compares FCMA with other
+   algorithms. The results are saved in the file `data_comparison.csv`.
+2. **Scalability analysis**: This set of experiments analyzes the scalability of FCMA. The
+   results are saved in the file `data_scalability.csv`.
+
+To run the experiments, execute the following commands:
 
 ```bash
-python run.py
+python run_comparison.py
+python run_scalability.py
 ```
 
-The results will be saved in the file `data.csv`.
+The results will be saved in the aforementioned CSV files.
 
-To generate the figures and tables, run the notebook [analysis.ipynb](analysis.ipynb).
+To generate the figures and tables, run the notebook
+[analysis_comparison.ipynb](analysis_comparison.ipynb) for the comparison experiments and
+[analysis_scalability.ipynb](analysis_scalability.ipynb) for the scalability experiments.
 
 There's another file, `example.py`, that solves the problem presented as an example in the
 paper. You can run it with:

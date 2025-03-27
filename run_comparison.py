@@ -111,11 +111,11 @@ def create_fcma_problem(
             )
 
             # Print logging information about the multipliers used
-            print(
-                f"app: {app.name} fm: {fm.name}\n"
-                f"   cores: {actual_cores_app} mem: {mem} perf: {actual_perf}\n"
-                f"   mul_cores: {mul_cores} mul_mem: {mul_mem} mul_perf: {mul_perf}"
-            )
+            # print(
+            #     f"app: {app.name} fm: {fm.name}\n"
+            #     f"   cores: {actual_cores_app} mem: {mem} perf: {actual_perf}\n"
+            #     f"   mul_cores: {mul_cores} mul_mem: {mul_mem} mul_perf: {mul_perf}"
+            # )
     return fcma.Fcma(fcma.System(system_dict), workloads=workloads)
 
 
@@ -303,7 +303,7 @@ def main() -> None:
     # Print a table with the comparison and save CSV
     comp_results = ComparisonResults(comp_results_list)
     if comp_results_list:
-        comp_results.save_to_csv(filename="data.csv", out_dir=f".")
+        comp_results.save_to_csv(filename="data_comparison.csv", out_dir=f".")
         print(comp_results.table())
     else:
         print("[red]No results[/red]")
