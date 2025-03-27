@@ -31,7 +31,7 @@ from cloudmodel.unified.units import (
 import aws_eu_west_1
 
 FRAC_GAP = 0.02
-MAX_SECONDS = 30
+MAX_SECONDS = 600
 SEED = 150
 COST_LIMIT = CurrencyPerTime(
     "100 usd/hour"
@@ -214,7 +214,7 @@ class ExperimentInfo:
         # Copy the csv file to the current directory so that that it has the latest
         # information
         src = os.path.join(dir_name, "exp_info.csv")
-        dst = os.path.join(".", "data_scaling.csv")
+        dst = os.path.join(".", "data_scalability.csv")
         shutil.copy(src, dst)
 
 def solve(problem: fcma.Fcma, verbose: bool = False) -> fcma.Solution:
